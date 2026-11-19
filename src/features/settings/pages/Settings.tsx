@@ -82,7 +82,7 @@ export function Settings() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Clinic Name</label>
             <input
               type="text"
-              defaultValue="HomeoCare Pro Clinic"
+              defaultValue="Jnana Homeopathy Clinic"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             />
           </div>
@@ -90,7 +90,7 @@ export function Settings() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Clinic Address</label>
             <textarea
               rows={3}
-              defaultValue="123 Main St, Mumbai, Maharashtra, India"
+              defaultValue="Shop No-10, KNS Complex, 2810, near Christ Public School, Bhogadi, Karnataka 570026"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             />
           </div>
@@ -98,7 +98,7 @@ export function Settings() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
             <input
               type="tel"
-              defaultValue="+91 9876543210"
+              defaultValue="+91 9353622753"
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             />
           </div>
