@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Breadcrumb, Menu, Popover, type MenuItemDef } from 'react-typescript-ui';
 import { Search, Plus, Bell, Sun, Moon, PanelLeft } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
+import { useToast } from '../../hooks/useToast';
 
 const SEGMENT_LABELS: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -42,6 +43,7 @@ export function TopBar({ onOpenCommandPalette, onOpenMobileMenu, isDesktop }: To
   const location = useLocation();
   const navigate = useNavigate();
   const { isDarkMode, toggleTheme } = useTheme();
+  const { showToast } = useToast();
 
   const newMenuItems: MenuItemDef[] = [
     { label: 'New patient', onSelect: () => navigate('/patients/new') },
@@ -130,7 +132,11 @@ export function TopBar({ onOpenCommandPalette, onOpenMobileMenu, isDesktop }: To
 
       <button
         type="button"
-        onClick={toggleTheme}
+        onClick={() => {
+          toggleTheme().catch((error: unknown) => {
+            showToast('error', error instanceof Error ? error.message : 'Could not save the theme preference.');
+          });
+        }}
         className="focus-ring w-9 h-9 flex items-center justify-center rounded-md text-muted hover:bg-surface-2"
         aria-label="Toggle dark mode"
       >

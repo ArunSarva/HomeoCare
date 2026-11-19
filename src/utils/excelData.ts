@@ -1,8 +1,8 @@
 import * as XLSX from 'xlsx';
-import { getDB } from '../hooks/useIndexedDB';
+import { bulkUpsertCloudRecords, getCloudRecords, type CloudCollection } from '../services/googleCloudStore';
 
 /**
- * Excel backup of all clinic data: one worksheet per IndexedDB store.
+ * Excel backup of clinic records: one worksheet per Google Sheets collection.
  * Nested values (complaint lists, medicines, emergency contact...) are kept
  * as JSON text in their cell so a file exported here imports back unchanged.
  * Import merges by `id`: rows with an existing id replace that record, rows
@@ -50,36 +50,14 @@ const REQUIRED: Record<StoreName, string[]> = {
 };
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-function getAll(db: IDBDatabase, store: string): Promise<Record<string, unknown>[]> {
-  return new Promise((resolve, reject) => {
-    if (!db.objectStoreNames.contains(store)) { resolve([]); return; }
-    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function putAll(db: IDBDatabase, store: string, rows: Record<string, unknown>[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!rows.length) { resolve(); return; }
-    const tx = db.transaction(store, 'readwrite');
-    const os = tx.objectStore(store);
-    rows.forEach((r) => os.put(r));
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error ?? new Error(`Saving ${store} was cancelled`));
-  });
-}
-
 function toCell(value: unknown): unknown {
   if (value === null || value === undefined) return '';
   if (typeof value === 'object') return JSON.stringify(value);
   return value;
 }
 
-/** Builds the workbook and starts the download. Returns how many rows went into each sheet. */
+/** Builds the workbook from Google Sheets and starts the download. */
 export async function exportToExcel(): Promise<StoreCounts> {
-  const db = await getDB();
   const wb = XLSX.utils.book_new();
   const counts = {} as StoreCounts;
 
@@ -94,7 +72,7 @@ export async function exportToExcel(): Promise<StoreCounts> {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(readme), 'About');
 
   for (const { store, sheet } of DATA_SHEETS) {
-    const records = await getAll(db, store);
+    const records = await getCloudRecords<Record<string, unknown>>(store);
     counts[store] = records.length;
     const columns: string[] = [];
     for (const r of records) for (const k of Object.keys(r)) if (!columns.includes(k)) columns.push(k);
@@ -132,7 +110,7 @@ function fromCell(field: string, value: unknown): unknown {
   return text;
 }
 
-/** Reads the file and merges its rows into the local database. */
+/** Reads the file and merges its rows into Google Sheets by record ID. */
 export async function importFromExcel(file: File): Promise<ImportReport> {
   if (file.size > MAX_IMPORT_BYTES) throw new Error('The file is larger than 10 MB. Please choose a HomeoCare Pro export file.');
   if (!/\.(xlsx|xls)$/i.test(file.name)) throw new Error('Please choose an Excel file (.xlsx or .xls).');
@@ -149,14 +127,14 @@ export async function importFromExcel(file: File): Promise<ImportReport> {
   }
 
   const report: ImportReport = { imported: {} as StoreCounts, skipped: [] };
-  const batches: Array<{ store: StoreName; rows: Record<string, unknown>[] }> = [];
+  const batches: Array<{ store: StoreName; rows: Array<Record<string, unknown> & { id: string }> }> = [];
 
   for (const { store, sheet } of DATA_SHEETS) {
     report.imported[store] = 0;
     const ws = wb.Sheets[sheet];
     if (!ws) continue;
     const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: '' });
-    const rows: Record<string, unknown>[] = [];
+    const rows: Array<Record<string, unknown> & { id: string }> = [];
     raw.forEach((cells, i) => {
       const record: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(cells)) {
@@ -172,16 +150,15 @@ export async function importFromExcel(file: File): Promise<ImportReport> {
         return;
       }
       record.id = String(record.id);
-      rows.push(record);
+      rows.push(record as Record<string, unknown> & { id: string });
     });
     batches.push({ store, rows });
   }
 
-  // Validate everything first, then write, so a bad file changes nothing.
-  const db = await getDB();
-  for (const { store, rows } of batches) {
-    await putAll(db, store, rows);
-    report.imported[store] = rows.length;
-  }
+  const records = batches.flatMap(({ store, rows }) =>
+    rows.map((record) => ({ collection: store as CloudCollection, record }))
+  );
+  await bulkUpsertCloudRecords(records);
+  for (const { store, rows } of batches) report.imported[store] = rows.length;
   return report;
 }

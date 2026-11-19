@@ -41,16 +41,7 @@ export class DashboardService {
       };
     } catch (error) {
       console.error('Error fetching KPIs:', error);
-      // Return mock data when backend unavailable
-      return {
-        totalPatients: 0,
-        todayAppointments: 0,
-        pendingFollowUps: 0,
-        activeCases: 0,
-        monthlyRevenue: 0,
-        totalPrescriptions: 0,
-        lowStockAlerts: 0,
-      };
+      throw error;
     }
   }
 
@@ -81,7 +72,7 @@ export class DashboardService {
       return data.filter(item => new Date(item.month + '-01') >= twelveMonthsAgo);
     } catch (error) {
       console.error('Error fetching patient growth data:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -103,7 +94,7 @@ export class DashboardService {
         .sort((a, b) => a.month.localeCompare(b.month));
     } catch (error) {
       console.error('Error fetching monthly visits data:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -125,7 +116,7 @@ export class DashboardService {
         .sort((a, b) => a.month.localeCompare(b.month));
     } catch (error) {
       console.error('Error fetching revenue trend data:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -149,7 +140,7 @@ export class DashboardService {
         .slice(0, 5); // Top 5 categories
     } catch (error) {
       console.error('Error fetching disease categories data:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -169,7 +160,7 @@ export class DashboardService {
         .map(([status, count]) => ({ status, count }));
     } catch (error) {
       console.error('Error fetching follow-up success data:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -227,7 +218,7 @@ export class DashboardService {
       return activities.slice(0, 10);
     } catch (error) {
       console.error('Error fetching recent activities:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -240,7 +231,7 @@ export class DashboardService {
         .sort((a, b) => a.startTime.localeCompare(b.startTime));
     } catch (error) {
       console.error('Error fetching today\'s appointments:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -262,7 +253,7 @@ export class DashboardService {
         .slice(0, 6);
     } catch (error) {
       console.error('Error fetching follow-ups due:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -281,6 +272,7 @@ export class DashboardService {
       });
     } catch (error) {
       console.error('Error fetching patient contacts:', error);
+      throw error;
     }
     return contacts;
   }
@@ -295,7 +287,7 @@ export class DashboardService {
         .slice(0, 5);
     } catch (error) {
       console.error('Error fetching recent patients:', error);
-      return [];
+      throw error;
     }
   }
 

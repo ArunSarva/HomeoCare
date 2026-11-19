@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import { User, Role, AuthState, LoginRequest } from '../../types'
+import { clearGoogleSheetsAuthorization } from '../../services/googleSheetsService'
 
 interface AuthContextType {
   user: User | null
@@ -17,8 +18,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 // Mock user data for offline login
 // Each entry has its own password; the password is never copied into the stored user.
 const mockUsers: Array<{ user: User; password: string }> = [
-  { user: { id: '1', username: 'jonnet', email: 'jonnet@example.com', role: 'Doctor', name: 'Jonnet', createdAt: new Date().toISOString() }, password: 'DoctorJonnet' },
-  { user: { id: '2', username: 'admin', email: 'admin@example.com', role: 'Admin', name: 'Admin', createdAt: new Date().toISOString() }, password: 'Edel@143' },
+  { user: { id: '1', username: 'jonnet', email: 'jonnet@example.com', role: 'Doctor', name: 'Jonnet', createdAt: new Date().toISOString() }, password: '123' },
+  { user: { id: '2', username: 'admin', email: 'admin@example.com', role: 'Admin', name: 'Admin', createdAt: new Date().toISOString() }, password: 'password' },
 ]
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -166,6 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    clearGoogleSheetsAuthorization()
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_user')
     

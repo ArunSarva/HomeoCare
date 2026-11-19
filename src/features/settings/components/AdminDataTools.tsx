@@ -1,10 +1,17 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from 'react-typescript-ui';
-import { CheckCircle2, AlertCircle, Download, Upload, Link2, Save } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Download, Upload, Link2, RefreshCw } from 'lucide-react';
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog';
 import { exportToExcel, importFromExcel, DATA_SHEETS, type ImportReport, type StoreCounts } from '../../../utils/excelData';
-import { getGoogleConfig, saveGoogleConfig, validateGoogleUrl } from '../../../config/appConfig';
+import { getGoogleConfig } from '../../../config/appConfig';
+import {
+  isGoogleOAuthConfigured,
+  isGoogleSheetsAuthorized,
+  loadGoogleIdentity,
+  requestGoogleSheetsAccessToken,
+} from '../../../services/googleSheetsService';
+import { migrateLegacyLocalDataToGoogleDrive, type LocalMigrationReport } from '../../../services/googleCloudStore';
 
 const card = 'bg-white rounded-lg shadow-sm border border-gray-200 p-6';
 const input = 'w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary';
@@ -27,28 +34,74 @@ function countsText(c: StoreCounts) {
   return DATA_SHEETS.map(({ store, sheet }) => `${c[store] ?? 0} ${sheet.toLowerCase()}`).join(', ');
 }
 
-/** Admin-only: Google connection, Excel export and Excel import. */
-export function AdminDataTools() {
+/** Google connection for all users; migration and backup tools are admin-only. */
+export function AdminDataTools({
+  onGoogleConnected,
+  onLegacyMigrationComplete,
+  adminFeatures = true,
+}: {
+  onGoogleConnected?: () => Promise<void> | void;
+  onLegacyMigrationComplete?: () => Promise<void> | void;
+  adminFeatures?: boolean;
+}) {
   const queryClient = useQueryClient();
 
   // ---------- Google connection ----------
   const initial = getGoogleConfig();
-  const [appsScriptUrl, setAppsScriptUrl] = useState(initial.appsScriptUrl);
-  const [sheetsUrl, setSheetsUrl] = useState(initial.sheetsUrl);
-  const [urlErrors, setUrlErrors] = useState<{ appsScript?: string; sheets?: string }>({});
-  const [urlSaved, setUrlSaved] = useState(false);
+  const googleOAuthConfigured = isGoogleOAuthConfigured();
+  const [identityReady, setIdentityReady] = useState(false);
+  const [googleConnected, setGoogleConnected] = useState(isGoogleSheetsAuthorized());
+  const [connecting, setConnecting] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+  const [migrationPending, setMigrationPending] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [migrationReport, setMigrationReport] = useState<LocalMigrationReport | null>(null);
 
-  function handleSaveUrls(e: React.FormEvent) {
-    e.preventDefault();
-    const errs = {
-      appsScript: validateGoogleUrl(appsScriptUrl, 'appsScript') ?? undefined,
-      sheets: validateGoogleUrl(sheetsUrl, 'sheets') ?? undefined,
-    };
-    setUrlErrors(errs);
-    setUrlSaved(false);
-    if (errs.appsScript || errs.sheets) return;
-    saveGoogleConfig({ appsScriptUrl, sheetsUrl });
-    setUrlSaved(true);
+  useEffect(() => {
+    if (!googleOAuthConfigured) return;
+    let active = true;
+    loadGoogleIdentity()
+      .then(() => { if (active) setIdentityReady(true); })
+      .catch((error: unknown) => {
+        if (active) setConnectionError(error instanceof Error ? error.message : 'Could not load Google sign-in.');
+      });
+    return () => { active = false; };
+  }, [googleOAuthConfigured]);
+
+  async function handleGoogleConnect() {
+    setConnecting(true);
+    setConnectionError(null);
+    setConnectionMessage(null);
+    try {
+      await requestGoogleSheetsAccessToken();
+      setGoogleConnected(true);
+      await onGoogleConnected?.();
+      setConnectionMessage('Google is connected for this browser session. Business data will be read from and written directly to this spreadsheet.');
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : 'Google connection failed.');
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function handleLegacyMigration() {
+    setMigrating(true);
+    setConnectionError(null);
+    try {
+      setMigrationReport(await migrateLegacyLocalDataToGoogleDrive());
+      setMigrationPending(false);
+      await queryClient.invalidateQueries();
+      try {
+        await onLegacyMigrationComplete?.();
+      } catch (error) {
+        setConnectionError(`Migration was verified, but settings could not be refreshed: ${error instanceof Error ? error.message : 'Unknown error.'}`);
+      }
+    } catch (error) {
+      setConnectionError(error instanceof Error ? error.message : 'Legacy data migration failed.');
+    } finally {
+      setMigrating(false);
+    }
   }
 
   // ---------- Export ----------
@@ -101,43 +154,65 @@ export function AdminDataTools() {
 
   return (
     <>
-      <form className={card} onSubmit={handleSaveUrls} noValidate>
+      <div className={card}>
         <h3 className="text-lg font-bold text-gray-900 mb-1 flex items-center gap-2">
           <Link2 className="h-5 w-5" /> Google connection
         </h3>
         <p className="text-gray-600 mb-4 text-sm">
-          Addresses the app uses to sign in through Google Apps Script and to sync data with Google Sheets.
-          Leave both empty to work offline only. Saved in this browser.
+          Connect to use the spreadsheet as the app's live backend. Records are not saved to a local cache;
+          access tokens stay in memory and are not saved to local storage or the spreadsheet.
         </p>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="appsScriptUrl" className="block text-sm font-medium text-gray-700 mb-1">Apps Script web-app URL</label>
-            <input id="appsScriptUrl" type="url" className={input} value={appsScriptUrl}
-              placeholder="https://script.google.com/macros/s/.../exec"
-              aria-invalid={Boolean(urlErrors.appsScript)} aria-describedby={urlErrors.appsScript ? 'appsScriptUrl-err' : undefined}
-              onChange={(e) => { setAppsScriptUrl(e.target.value); setUrlSaved(false); }} />
-            {urlErrors.appsScript && <p id="appsScriptUrl-err" className="mt-1 text-sm text-red-600">{urlErrors.appsScript}</p>}
-          </div>
-          <div>
-            <label htmlFor="sheetsUrl" className="block text-sm font-medium text-gray-700 mb-1">Google Sheets data URL</label>
-            <input id="sheetsUrl" type="url" className={input} value={sheetsUrl}
-              placeholder="https://..."
-              aria-invalid={Boolean(urlErrors.sheets)} aria-describedby={urlErrors.sheets ? 'sheetsUrl-err' : undefined}
-              onChange={(e) => { setSheetsUrl(e.target.value); setUrlSaved(false); }} />
-            {urlErrors.sheets && <p id="sheetsUrl-err" className="mt-1 text-sm text-red-600">{urlErrors.sheets}</p>}
-          </div>
+        <div>
+          <label htmlFor="sheetsUrl" className="block text-sm font-medium text-gray-700 mb-1">Connected Google Sheet</label>
+          <input id="sheetsUrl" type="url" className={`${input} bg-gray-50`} value={initial.sheetsUrl} readOnly />
         </div>
-        <div className="mt-4">
-          <Button type="submit" color="primary" leftIcon={<Save size={16} />}>Save connection</Button>
-        </div>
-        {urlSaved && (
-          <Notice kind="ok" title="Connection saved.">
-            <p className="mt-1">{appsScriptUrl.trim() || sheetsUrl.trim() ? 'New sign-ins and syncs use these addresses.' : 'Both addresses are empty, so the app works offline only.'}</p>
+        {!googleOAuthConfigured && (
+          <Notice kind="error" title="Google OAuth is not configured.">
+            <p className="mt-1">Set <code>VITE_GOOGLE_CLIENT_ID</code> in <code>.env.local</code>, then restart the dev server.</p>
           </Notice>
         )}
-      </form>
+        {googleOAuthConfigured && !identityReady && !connectionError && (
+          <p className="mt-3 text-sm text-gray-600">Loading Google authorization…</p>
+        )}
+        <div className="mt-4">
+          <Button
+            color="primary"
+            onClick={handleGoogleConnect}
+            loading={connecting}
+            disabled={!googleOAuthConfigured || !identityReady || connecting}
+            leftIcon={<RefreshCw size={16} />}
+          >
+            {googleConnected ? 'Reconnect Google' : 'Connect Google'}
+          </Button>
+        </div>
+        {connectionMessage && <Notice kind="ok" title={connectionMessage} />}
+        {connectionError && <Notice kind="error" title={connectionError} />}
+        {adminFeatures && <div className="mt-5 border-t border-gray-200 pt-4">
+          <h4 className="font-medium text-gray-900">Move existing browser data to Google</h4>
+          <p className="mt-1 text-sm text-gray-600">
+            One-time migration of older data from this browser's IndexedDB and local settings. Local records are
+            cleared only after Google Sheets confirms the migrated rows.
+          </p>
+          <Button
+            variant="outline"
+            color="primary"
+            className="mt-3"
+            onClick={() => setMigrationPending(true)}
+            loading={migrating}
+            disabled={!googleConnected || migrating}
+            leftIcon={<RefreshCw size={16} />}
+          >
+            Migrate legacy browser data
+          </Button>
+          {migrationReport && (
+            <Notice kind="ok" title={`Migration verified: ${migrationReport.total} record(s) moved.`}>
+              <p className="mt-1">{Object.entries(migrationReport.migrated).map(([name, count]) => `${count} ${name}`).join(', ')}.</p>
+            </Notice>
+          )}
+        </div>}
+      </div>
 
-      <div className={card}>
+      {adminFeatures && <div className={card}>
         <h3 className="text-lg font-bold text-gray-900 mb-1 flex items-center gap-2">
           <Download className="h-5 w-5" /> Export to Excel
         </h3>
@@ -148,9 +223,9 @@ export function AdminDataTools() {
         <Button color="primary" onClick={handleExport} loading={exporting} leftIcon={<Download size={16} />}>Export to Excel</Button>
         {exported && <Notice kind="ok" title="Export downloaded."><p className="mt-1">{countsText(exported)}.</p></Notice>}
         {exportError && <Notice kind="error" title={exportError} />}
-      </div>
+      </div>}
 
-      <div className={card}>
+      {adminFeatures && <div className={card}>
         <h3 className="text-lg font-bold text-gray-900 mb-1 flex items-center gap-2">
           <Upload className="h-5 w-5" /> Import from Excel
         </h3>
@@ -175,17 +250,28 @@ export function AdminDataTools() {
           </Notice>
         )}
         {importError && <Notice kind="error" title={importError} />}
-      </div>
+      </div>}
 
-      <ConfirmDialog
-        open={pendingFile !== null}
-        title="Import from Excel"
-        message={`Import "${pendingFile?.name ?? ''}"? Records with the same id are overwritten with the values in the file; new ids are added. Existing records not in the file stay as they are. Consider exporting first as a backup.`}
-        confirmLabel="Import"
-        busy={importing}
-        onConfirm={handleImport}
-        onCancel={() => setPendingFile(null)}
-      />
+      {adminFeatures && <>
+        <ConfirmDialog
+          open={pendingFile !== null}
+          title="Import from Excel"
+          message={`Import "${pendingFile?.name ?? ''}"? Records with the same id are overwritten with the values in the file; new ids are added. Existing records not in the file stay as they are. Consider exporting first as a backup.`}
+          confirmLabel="Import"
+          busy={importing}
+          onConfirm={handleImport}
+          onCancel={() => setPendingFile(null)}
+        />
+        <ConfirmDialog
+          open={migrationPending}
+          title="Migrate legacy browser data"
+          message="This copies business records, prescription templates, search history and the saved theme from this browser to the configured Google Sheet. Existing Google rows with matching IDs will be replaced. Local records are deleted only after verification. Continue?"
+          confirmLabel="Migrate and verify"
+          busy={migrating}
+          onConfirm={handleLegacyMigration}
+          onCancel={() => setMigrationPending(false)}
+        />
+      </>}
     </>
   );
 }

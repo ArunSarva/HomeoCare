@@ -7,6 +7,21 @@ import { seedDemoData, removeDemoData, type SeedSummary } from '../../../utils/s
 import { patientService } from '../../patients/services/patientService';
 import { useAuth } from '../../auth/AuthContext';
 import { AdminDataTools } from '../components/AdminDataTools';
+import { getCloudSetting, setCloudSetting } from '../../../services/googleCloudStore';
+import { isGoogleSheetsAuthorized } from '../../../services/googleSheetsService';
+import { useTheme } from '../../../context/ThemeContext';
+
+interface ClinicProfile {
+  clinicName: string;
+  clinicAddress: string;
+  phoneNumber: string;
+}
+
+const DEFAULT_CLINIC_PROFILE: ClinicProfile = {
+  clinicName: 'HomeoCare Pro Clinic',
+  clinicAddress: '123 Main St, Mumbai, Maharashtra, India',
+  phoneNumber: '+91 9876543210',
+};
 
 export function Settings() {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -17,9 +32,47 @@ export function Settings() {
   const [removed, setRemoved] = useState<SeedSummary | null>(null);
   const [hasDemoData, setHasDemoData] = useState(false);
   const [patientCount, setPatientCount] = useState<number>(0);
+  const [clinicProfile, setClinicProfile] = useState<ClinicProfile>(DEFAULT_CLINIC_PROFILE);
+  const [clinicSettingsError, setClinicSettingsError] = useState<string | null>(null);
+  const [clinicSettingsSaving, setClinicSettingsSaving] = useState(false);
+  const [clinicSettingsSaved, setClinicSettingsSaved] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const { isDarkMode, toggleTheme, refreshThemeFromCloud } = useTheme();
   const isAdmin = user?.role === 'Admin';
+
+  const loadCloudSettings = useCallback(async () => {
+    if (!isGoogleSheetsAuthorized()) return;
+    const [savedProfile, savedNotifications] = await Promise.all([
+      getCloudSetting<ClinicProfile | null>('clinicProfile', null),
+      getCloudSetting('notificationsEnabled', true),
+    ]);
+    if (savedProfile) setClinicProfile({ ...DEFAULT_CLINIC_PROFILE, ...savedProfile });
+    setNotificationsEnabled(savedNotifications);
+    await refreshThemeFromCloud();
+  }, [refreshThemeFromCloud]);
+
+  useEffect(() => {
+    loadCloudSettings().catch((err: unknown) => {
+      setClinicSettingsError(err instanceof Error ? err.message : 'Could not load clinic settings from Google.');
+    });
+  }, [loadCloudSettings]);
+
+  async function handleSaveClinicSettings() {
+    setClinicSettingsSaving(true);
+    setClinicSettingsError(null);
+    setClinicSettingsSaved(false);
+    try {
+      await setCloudSetting('clinicProfile', clinicProfile);
+      await setCloudSetting('notificationsEnabled', notificationsEnabled);
+      setClinicSettingsSaved(true);
+    } catch (err) {
+      setClinicSettingsError(err instanceof Error ? err.message : 'Could not save clinic settings to Google.');
+    } finally {
+      setClinicSettingsSaving(false);
+    }
+  }
 
   // Check if demo data exists
   const checkDemoData = useCallback(async () => {
@@ -28,8 +81,9 @@ export function Settings() {
       setPatientCount(count);
       // Demo data has about 30 patients, so if we have 15+, it's likely demo data
       setHasDemoData(count >= 15);
+      setError(null);
     } catch (error) {
-      console.error('Error checking patient count:', error);
+      setError(error instanceof Error ? error.message : 'Could not load patient count from Google Sheets.');
     }
   }, []);
 
@@ -82,7 +136,11 @@ export function Settings() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Clinic Name</label>
             <input
               type="text"
-              defaultValue="Jnana Homeopathy Clinic"
+              value={clinicProfile.clinicName}
+              onChange={(event) => {
+                setClinicProfile((current) => ({ ...current, clinicName: event.target.value }));
+                setClinicSettingsSaved(false);
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             />
           </div>
@@ -90,7 +148,11 @@ export function Settings() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Clinic Address</label>
             <textarea
               rows={3}
-              defaultValue="Shop No-10, KNS Complex, 2810, near Christ Public School, Bhogadi, Karnataka 570026"
+              value={clinicProfile.clinicAddress}
+              onChange={(event) => {
+                setClinicProfile((current) => ({ ...current, clinicAddress: event.target.value }));
+                setClinicSettingsSaved(false);
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             />
           </div>
@@ -98,10 +160,27 @@ export function Settings() {
             <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
             <input
               type="tel"
-              defaultValue="+91 9353622753"
+              value={clinicProfile.phoneNumber}
+              onChange={(event) => {
+                setClinicProfile((current) => ({ ...current, phoneNumber: event.target.value }));
+                setClinicSettingsSaved(false);
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg"
             />
           </div>
+          <Button
+            color="primary"
+            onClick={handleSaveClinicSettings}
+            loading={clinicSettingsSaving}
+            disabled={!isGoogleSheetsAuthorized() || clinicSettingsSaving}
+          >
+            Save clinic settings to Google
+          </Button>
+          {!isGoogleSheetsAuthorized() && (
+            <p className="text-sm text-gray-500">Connect Google from the admin Google connection panel before editing cloud settings.</p>
+          )}
+          {clinicSettingsSaved && <p role="status" className="text-sm text-green-700">Clinic settings saved to Google Sheets.</p>}
+          {clinicSettingsError && <p role="alert" className="text-sm text-red-700">{clinicSettingsError}</p>}
         </div>
       </div>
 
@@ -109,13 +188,41 @@ export function Settings() {
         <h3 className="text-lg font-bold text-gray-900 mb-4">User Preferences</h3>
         <div className="space-y-4">
           <div className="flex items-center">
-            <input type="checkbox" id="darkMode" defaultChecked className="w-4 h-4 text-primary border-gray-300 rounded" />
+            <input
+              type="checkbox"
+              id="darkMode"
+              checked={isDarkMode}
+              disabled={!isGoogleSheetsAuthorized()}
+              onChange={() => toggleTheme().catch((err: unknown) => {
+                setClinicSettingsError(err instanceof Error ? err.message : 'Could not save the theme preference.');
+              })}
+              className="w-4 h-4 text-primary border-gray-300 rounded"
+            />
             <label htmlFor="darkMode" className="ml-2 text-sm text-gray-700">Enable Dark Mode</label>
           </div>
           <div className="flex items-center">
-            <input type="checkbox" id="notifications" defaultChecked className="w-4 h-4 text-primary border-gray-300 rounded" />
+            <input
+              type="checkbox"
+              id="notifications"
+              checked={notificationsEnabled}
+              disabled={!isGoogleSheetsAuthorized()}
+              onChange={(event) => {
+                setNotificationsEnabled(event.target.checked);
+                setClinicSettingsSaved(false);
+              }}
+              className="w-4 h-4 text-primary border-gray-300 rounded"
+            />
             <label htmlFor="notifications" className="ml-2 text-sm text-gray-700">Enable Notifications</label>
           </div>
+          <Button
+            variant="outline"
+            color="primary"
+            onClick={handleSaveClinicSettings}
+            loading={clinicSettingsSaving}
+            disabled={!isGoogleSheetsAuthorized() || clinicSettingsSaving}
+          >
+            Save preferences
+          </Button>
         </div>
       </div>
 
@@ -193,13 +300,21 @@ export function Settings() {
             )}
           </div>
 
-          <AdminDataTools />
         </>
       ) : (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 text-sm text-gray-600">
-          Demo data, Google connection and Excel export / import are available to Admin users only.
+          Demo data and Excel import / export are available to Admin users only.
         </div>
       )}
+
+      <AdminDataTools
+        adminFeatures={isAdmin}
+        onGoogleConnected={async () => {
+          await loadCloudSettings();
+          await checkDemoData();
+        }}
+        onLegacyMigrationComplete={loadCloudSettings}
+      />
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-bold text-gray-900 mb-4">About</h3>

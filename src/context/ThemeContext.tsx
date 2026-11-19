@@ -1,48 +1,60 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { getCloudSetting, setCloudSetting } from '../services/googleCloudStore';
+import { isGoogleSheetsAuthorized } from '../services/googleSheetsService';
 
 type Theme = 'light' | 'dark';
 
 interface ThemeContextType {
   theme: Theme;
-  toggleTheme: () => void;
+  toggleTheme: () => Promise<void>;
+  refreshThemeFromCloud: () => Promise<void>;
   isDarkMode: boolean;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [theme, setTheme] = useState<Theme>(() => {
-    // Check localStorage or system preference
-    const stored = localStorage.getItem('theme') as Theme;
-    if (stored) return stored;
-    
-    // Check system preference
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      return 'dark';
-    }
-    
-    return 'light';
-  });
+function getSystemTheme(): Theme {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
 
+export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const [theme, setTheme] = useState<Theme>(getSystemTheme);
   const isDarkMode = theme === 'dark';
 
-  useEffect(() => {
-    // Apply theme to document
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-    }
-  }, [theme, isDarkMode]);
+  const refreshThemeFromCloud = useCallback(async () => {
+    if (!isGoogleSheetsAuthorized()) return;
+    const savedTheme = await getCloudSetting<Theme>('theme', getSystemTheme());
+    setTheme(savedTheme);
+  }, []);
 
-  const toggleTheme = () => {
-    setTheme(prev => prev === 'light' ? 'dark' : 'light');
-  };
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', isDarkMode);
+  }, [isDarkMode]);
+
+  useEffect(() => {
+    if (isGoogleSheetsAuthorized()) {
+      refreshThemeFromCloud().catch((error: unknown) => {
+        console.error('Could not load the saved cloud theme:', error);
+      });
+    }
+  }, [refreshThemeFromCloud]);
+
+  const toggleTheme = useCallback(async () => {
+    if (!isGoogleSheetsAuthorized()) {
+      throw new Error('Connect Google in Settings before saving a theme preference.');
+    }
+    const nextTheme: Theme = theme === 'light' ? 'dark' : 'light';
+    setTheme(nextTheme);
+    try {
+      await setCloudSetting('theme', nextTheme);
+    } catch (error) {
+      setTheme(theme);
+      throw error;
+    }
+  }, [theme]);
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, isDarkMode }}>
+    <ThemeContext.Provider value={{ theme, toggleTheme, refreshThemeFromCloud, isDarkMode }}>
       {children}
     </ThemeContext.Provider>
   );

@@ -1,6 +1,6 @@
 # HomeoCare Pro - Homeopathy Clinic Management System
 
-A comprehensive homeopathy clinic management web application for doctors managing small to medium clinics. Supports up to 10,000+ patients with offline-first architecture.
+A homeopathy clinic management application whose live data backend is Google Sheets, with patient photos stored in Google Drive. An internet connection and Google authorization are required for clinic data.
 
 ## Features
 
@@ -13,7 +13,7 @@ A comprehensive homeopathy clinic management web application for doctors managin
 - **Billing & Reports** - Consultation, medicine, and follow-up charges with revenue reports
 - **Dashboard** - KPI cards, charts (patient growth, revenue trends, disease categories), activity feed
 - **Search** - Global search by patient name/ID/mobile/medicine/disease
-- **Offline-First** - IndexedDB caching with automatic sync when online
+- **Cloud-Only Data** - Reads and writes clinic data directly to Google Sheets; no local record cache or offline queue
 - **Dark Mode** - Clinic-grade dark theme support
 
 ## Tech Stack
@@ -22,9 +22,9 @@ A comprehensive homeopathy clinic management web application for doctors managin
 - **UI Library**: react-typescript-ui
 - **Rich Text Editor**: react_typescript_editor
 - **Routing**: React Router
-- **State Management**: React Query + IndexedDB
-- **Backend**: Google Apps Script
-- **Database**: Google Sheets (primary) + IndexedDB (cache)
+- **State Management**: React Query (in-memory cache only)
+- **Google integration**: Google Sheets API with Google OAuth
+- **Database**: Google Sheets (`HomeoCareData` tab)
 - **Documents**: Google Drive
 - **Build**: PWA support with service worker
 
@@ -33,7 +33,7 @@ A comprehensive homeopathy clinic management web application for doctors managin
 ### Prerequisites
 
 - Node.js 18+
-- Google Cloud account (for Apps Script and Sheets)
+- Google Cloud project (OAuth client and Sheets API)
 - Chrome or Edge browser (for PWA)
 
 ### Installation
@@ -59,54 +59,36 @@ npm run build
 
 ## Configuration
 
-No `.env` file is needed. The app works fully offline out of the box.
-
-To connect Google Apps Script and Google Sheets, sign in as `admin` and open
-**Settings > Google connection**. Enter the Apps Script web-app URL and the Google
-Sheets data URL, then press **Save connection**. The addresses are stored in that
-browser and take effect immediately. Leave both empty to stay offline only.
+Copy `.env.example` to `.env.local` and configure `VITE_GOOGLE_SHEETS_URL` and
+`VITE_GOOGLE_CLIENT_ID`. These are public client configuration; never put an OAuth
+client secret in a `VITE_` variable. Each user must connect a Google account that
+has access to the configured spreadsheet. The app requires an internet connection
+and writes business records directly to Sheets—there is no offline record cache
+or deferred sync queue. OAuth access tokens remain in memory and are never written
+to the spreadsheet.
 
 ## Setup Guide
 
 ### 1. Google Sheet Setup
 
-1. Create a new Google Sheet at https://sheets.google.com
-2. Create the following sheets (tabs):
-   - **Patients**: PatientID, FullName, Photo, DOB, Age, Gender, MaritalStatus, Occupation, Mobile, WhatsApp, Email, Street, City, State, Pincode, Height, Weight, BMI, BloodGroup, EmergencyContact, RegistrationDate, CreatedAt, CreatedBy
-   - **Appointments**: AppointmentID, PatientID, Date, StartTime, EndTime, Type, Status, Notes, CreatedAt, CreatedBy
-   - **CaseHistory**: CaseID, PatientID, VisitDate, ChiefComplaints, MentalSymptoms, PhysicalGenerals, FoodPreferences, Notes, CreatedAt, CreatedBy
-   - **Prescriptions**: PrescriptionID, PatientID, CaseID, Medicine, Potency, Dosage, Frequency, Duration, Notes, CreatedAt, CreatedBy
-   - **FollowUps**: FollowUpID, PatientID, CaseID, VisitDate, Symptoms, ImprovementPercent, Aggravation, NewSymptoms, Status, Notes, CreatedAt, CreatedBy
-   - **Inventory**: InventoryID, Name, BatchNumber, ExpiryDate, Quantity, Vendor, UnitPrice, CreatedAt
-   - **Billing**: BillingID, PatientID, CaseID, AppointmentID, ConsultationFee, MedicineCharges, FollowUpCharges, TotalAmount, PaymentStatus, PaymentMethod, Notes, CreatedAt
-   - **Users**: UserID, Username, PasswordHash, Role, Email, CreatedAt
-   - **AuditLogs**: AuditID, Action, EntityType, EntityID, UserID, Timestamp, Details
-   - **Settings**: SettingKey, SettingValue, Description
+1. Use the spreadsheet URL in `VITE_GOOGLE_SHEETS_URL`; HomeoCare preserves existing tabs.
+2. On first authorized access, HomeoCare creates a `HomeoCareData` tab with columns `Collection`, `ID`, `Record JSON`, and `Updated At`.
+3. Keep the spreadsheet private and authorize only trusted Google accounts.
 
-3. Copy the Sheet ID from the URL (the long string between `d/` and `/edit`)
-4. Share the sheet with the Apps Script account
+Patient, appointment, case, prescription, follow-up, inventory, billing, settings,
+prescription template, search-history, and audit-log records are stored in that tab.
+Photos are uploaded to Drive and the corresponding Drive file ID is stored in each
+patient record. Credentials and OAuth tokens are not stored in Sheets.
 
-### 2. Google Apps Script Setup
+### 2. Google OAuth and Sheets API Setup
 
-1. Go to https://script.google.com
-2. Create a new project
-3. Copy all files from `apps-script/` folder to the Apps Script editor
-4. Deploy as Web App:
-   - Click "Deploy" → "New Deployment"
-   - Select type "Web app"
-   - Execute as: "Me"
-   - Who has access: "Anyone with Google account"
-   - Click "Deploy"
-5. Copy the deployment URL (looks like `https://script.google.com/macros/s/...`)
-6. Sign in as `admin`, open **Settings > Google connection**, paste this URL into **Apps Script web-app URL** and press **Save connection**
+1. In [Google Cloud Console](https://console.cloud.google.com/), select or create a project and enable the **Google Sheets API** and **Google Drive API**.
+2. Configure the OAuth consent screen. While the app is in testing, add the Google account that owns the Sheet as a test user.
+3. Create an OAuth client ID of type **Web application**. Add the local app origin (for example, `http://localhost:5173`) to **Authorized JavaScript origins**.
+4. Copy `.env.example` to `.env.local`, set `VITE_GOOGLE_CLIENT_ID` and `VITE_GOOGLE_SHEETS_URL`, then restart the app.
+5. Sign in to HomeoCare and choose **Connect Google**. Grant access to Sheets and Drive when prompted.
 
-### 3. Enable Google Sheets API
-
-1. Go to https://console.cloud.google.com
-2. Create a new project or select existing one
-3. Enable "Google Sheets API" and "Google Drive API"
-4. Create credentials (Service Account or OAuth client)
-5. Share your Google Sheet with the service account email
+After a page reload, HomeoCare automatically requests a fresh Google access token; previously granted consent is reused when the Google account session is available. Tokens remain in memory and are never persisted. If Google requires interaction, select **Connect Google** to reconnect. Legacy browser records can be moved from **Settings > Migrate legacy browser data**; matching IDs overwrite cloud rows. Local records are cleared only after HomeoCare verifies the migrated Sheets rows.
 
 ## React Version Note
 
@@ -180,16 +162,12 @@ The dashboard shows:
 
 1. Click the search icon in the header
 2. Type patient name, ID, mobile, medicine, or disease
-3. Results appear instantly from IndexedDB cache
+3. Results are queried directly from Google Sheets.
 
-### Offline Mode
+### Offline behavior
 
-When offline:
-
-- Create/edit/view patients, cases, prescriptions, follow-ups
-- Operations save to IndexedDB queue
-- Auto-sync when internet becomes available
-- Dashboard shows cached data
+Clinic data cannot be viewed or changed offline. Changes are sent directly to
+Google Sheets and are not queued or cached on the device.
 
 ## Building for Production
 
@@ -226,10 +204,6 @@ homeocare-pro/
 │   │   └── settings/        # Clinic settings
 │   ├── routes/               # Route definitions
 │   └── utils/                # Utility functions
-├── apps-script/              # Google Apps Script backend
-│   ├── Code.gs              # Main entry point
-│   ├── services/            # Service modules
-│   └── controllers/         # API controllers
 ├── public/                   # Static assets
 ├── dist/                     # Build output
 ├── package.json
@@ -267,23 +241,22 @@ Strict mode enabled in `tsconfig.json`:
 
 ## Troubleshooting
 
-### Apps Script Returns 403
+### Google OAuth or Sheets API errors
 
-- Ensure Apps Script is deployed as "Anyone with Google account"
-- Check CORS settings in `Code.gs`
-- Verify the Apps Script web-app URL in **Settings > Google connection**
+- Ensure the Google Sheets API is enabled in the Cloud project used by the OAuth client.
+- Ensure the Google Drive API is enabled for patient photo uploads.
+- Add the local app origin (for example, `http://localhost:5173`) to the OAuth client’s authorized JavaScript origins.
+- If the OAuth consent screen is in testing, add the Google account that owns the Sheet as a test user.
+- Confirm `VITE_GOOGLE_CLIENT_ID` and `VITE_GOOGLE_SHEETS_URL` are set in `.env.local`, then restart the dev server.
+- Confirm the account authorizing HomeoCare has access to the Sheet and has granted the requested scopes.
 
 ### Sheet Data Not Loading
 
-- Verify the Google Sheets data URL in **Settings > Google connection**
-- Ensure sheet is shared with Apps Script account
-- Check browser console for errors
-
-### IndexedDB Not Working
-
-- Check browser supports IndexedDB (all modern browsers do)
-- Clear browser cache and reload
-- Check DevTools Application tab for database
+- Reconnect Google from the access prompt or **Settings > Google connection**.
+- Confirm the `HomeoCareData` tab has the expected four headers. HomeoCare creates
+  this tab automatically; do not rename its columns.
+- Check that the signed-in Google account has access to the configured spreadsheet
+  and that both Google APIs are enabled.
 
 ### Build Fails with TypeScript Errors
 
@@ -296,7 +269,7 @@ Strict mode enabled in `tsconfig.json`:
 1. Create a new branch for your feature
 2. Make changes with clear commit messages
 3. Run `npm run build` to verify
-4. Test offline mode if changes affect data layer
+4. Verify reads and writes while connected to Google Sheets
 5. Update this README if needed
 
 ## License

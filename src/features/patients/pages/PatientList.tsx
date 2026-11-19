@@ -26,6 +26,7 @@ const PatientList: React.FC = () => {
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [pendingDelete, setPendingDelete] = useState<Patient | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const { data: patients = [], isLoading, error } = useQuery({
     queryKey: ['patients'],
@@ -68,26 +69,26 @@ const PatientList: React.FC = () => {
   };
 
   const handleEdit = (patient: Patient) => {
-    // Store patient data in localStorage for the edit page
-    localStorage.setItem('editingPatient', JSON.stringify(patient));
     navigate(`/patients/${patient.id}/edit`);
   };
 
   const handleDelete = async (id: string) => {
-    try {
-      await patientService.deletePatient(id);
-      queryClient.invalidateQueries({ queryKey: ['patients'] });
-    } catch (error) {
-      console.error('Failed to delete patient:', error);
-    }
+    await patientService.deletePatient(id);
+    await queryClient.invalidateQueries({ queryKey: ['patients'] });
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setDeleting(true);
-    await handleDelete(pendingDelete.id);
-    setDeleting(false);
-    setPendingDelete(null);
+    setDeleteError(null);
+    try {
+      await handleDelete(pendingDelete.id);
+      setPendingDelete(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'Could not delete the patient from Google Sheets.');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleAddNew = () => {
@@ -139,7 +140,10 @@ const PatientList: React.FC = () => {
           </button>
           <button
             type="button"
-            onClick={() => setPendingDelete(p)}
+            onClick={() => {
+              setDeleteError(null);
+              setPendingDelete(p);
+            }}
             className="focus-ring w-8 h-8 rounded-md flex items-center justify-center text-muted hover:bg-surface hover:text-danger"
             aria-label={`Delete ${p.fullName}`}
           >
@@ -166,7 +170,7 @@ const PatientList: React.FC = () => {
 
       {error ? (
         <Alert color="danger" title="Couldn't load patients">
-          Please try again. If this keeps happening, check that the app has storage access.
+          Please try again. If this keeps happening, check the Google connection and spreadsheet access.
         </Alert>
       ) : (
         <DataTable
@@ -246,11 +250,11 @@ const PatientList: React.FC = () => {
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete patient?"
-        message={
-          pendingDelete
-            ? `${pendingDelete.fullName} (${pendingDelete.patientId}) will be removed from this device. This can't be undone.`
-            : ''
-        }
+        message={deleteError
+          ? `Could not delete the patient: ${deleteError}`
+          : pendingDelete
+            ? `${pendingDelete.fullName} (${pendingDelete.patientId}) will be deleted from the Google spreadsheet. This can't be undone.`
+            : ''}
         confirmLabel="Delete patient"
         destructive
         busy={deleting}

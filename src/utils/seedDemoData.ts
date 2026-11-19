@@ -5,7 +5,6 @@ import { prescriptionService } from '../features/prescriptions/services/prescrip
 import { followUpService } from '../features/followups/services/followUpService';
 import { inventoryService } from '../features/inventory/services/inventoryService';
 import { billingService } from '../features/billing/services/billingService';
-import { getDB } from '../hooks/useIndexedDB';
 import type {
   Patient,
   Appointment,
@@ -20,12 +19,11 @@ import type {
  * Fills the app with a realistic-looking demo dataset, entirely through the
  * same service functions the UI calls (patientService.createPatient, etc.),
  * so every record gets a real P000001-style id, passes through the same
- * offline-queue logic, and shows up correctly everywhere the UI reads it
+ * Google Sheets backend, and shows up correctly everywhere the UI reads it
  * (e.g. inventory/billing derive their status badges from quantity/expiry/
  * amounts at read time, not from a stored flag, so this never sets those).
  *
- * Runs in whichever browser tab calls it, because the app's data lives in
- * that browser's own IndexedDB — there is no server-side store to seed.
+ * Runs in whichever authorized browser tab calls it.
  */
 
 function iso(dateOnly: Date): string {
@@ -474,68 +472,43 @@ const DEMO_STOCK = [
 
 export type RemoveSummary = SeedSummary;
 
-function getAll<T>(db: IDBDatabase, store: string): Promise<T[]> {
-  return new Promise((resolve, reject) => {
-    if (!db.objectStoreNames.contains(store)) { resolve([]); return; }
-    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
-    req.onsuccess = () => resolve(req.result as T[]);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function deleteKeys(db: IDBDatabase, store: string, keys: IDBValidKey[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (!keys.length || !db.objectStoreNames.contains(store)) { resolve(); return; }
-    const tx = db.transaction(store, 'readwrite');
-    const os = tx.objectStore(store);
-    keys.forEach((k) => os.delete(k));
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
-
 /**
  * Removes the records created by seedDemoData: the 20 demo patients (matched
  * by name and mobile), every appointment, case, prescription, follow-up and
- * bill belonging to those patients, the 6 demo stock batches, and any pending
- * sync-queue entries for them. Records the clinic entered itself stay, unless
- * they were attached to a demo patient.
+ * bill belonging to those patients, and the 6 demo stock batches.
  */
 export async function removeDemoData(): Promise<RemoveSummary> {
-  const db = await getDB();
   const demoKeys = new Set(PATIENT_SEEDS.map((p) => `${p.fullName}|${p.mobile}`));
-  const patients = (await getAll<Patient>(db, 'patients')).filter((p) => demoKeys.has(`${p.fullName}|${p.mobile}`));
+  const [allPatients, allAppointments, allCases, allPrescriptions, allFollowUps, allBilling, allInventory] = await Promise.all([
+    patientService.getAllPatients(),
+    appointmentService.getAllAppointments(),
+    caseService.getAllCases(),
+    prescriptionService.getAllPrescriptions(),
+    followUpService.getAllFollowUps(),
+    billingService.getAllBillings(),
+    inventoryService.getAllInventoryItems(),
+  ]);
+  const patients = allPatients.filter((patient) => demoKeys.has(`${patient.fullName}|${patient.mobile}`));
   const owners = new Set<string>();
-  patients.forEach((p) => { owners.add(p.id); if (p.patientId) owners.add(p.patientId); });
-  const owned = async <T extends { id: string; patientId: string }>(store: string) =>
-    (await getAll<T>(db, store)).filter((r) => owners.has(r.patientId)).map((r) => r.id);
-
+  patients.forEach((patient) => { owners.add(patient.id); owners.add(patient.patientId); });
   const removed: Record<string, string[]> = {
-    patients: patients.map((p) => p.id),
-    appointments: await owned<Appointment>('appointments'),
-    cases: await owned<Case>('cases'),
-    prescriptions: await owned<Prescription>('prescriptions'),
-    followups: await owned<FollowUp>('followups'),
-    billing: await owned<Billing>('billing'),
-    inventory: (await getAll<Inventory>(db, 'inventory'))
-      .filter((i) => DEMO_STOCK.some(([name, batch]) => i.medicineName === name && i.batch === batch))
-      .map((i) => i.id),
+    patients: patients.map((patient) => patient.id),
+    appointments: allAppointments.filter((record) => owners.has(record.patientId)).map((record) => record.id),
+    cases: allCases.filter((record) => owners.has(record.patientId)).map((record) => record.id),
+    prescriptions: allPrescriptions.filter((record) => owners.has(record.patientId)).map((record) => record.id),
+    followups: allFollowUps.filter((record) => owners.has(record.patientId)).map((record) => record.id),
+    billing: allBilling.filter((record) => owners.has(record.patientId)).map((record) => record.id),
+    inventory: allInventory
+      .filter((item) => DEMO_STOCK.some(([name, batch]) => item.medicineName === name && item.batch === batch))
+      .map((item) => item.id),
   };
-  for (const [store, ids] of Object.entries(removed)) await deleteKeys(db, store, ids);
-
-  // Drop queued uploads for the removed records so nothing is synced later.
-  const allIds = new Set(Object.values(removed).flat());
-  if (allIds.size && db.objectStoreNames.contains('syncQueue')) {
-    const queueStore = db.transaction('syncQueue', 'readonly').objectStore('syncQueue');
-    const keyPath = queueStore.keyPath as string;
-    const queued = await getAll<Record<string, unknown>>(db, 'syncQueue');
-    const stale = queued
-      .filter((q) => { const s = JSON.stringify(q); for (const id of allIds) if (s.includes(id)) return true; return false; })
-      .map((q) => q[keyPath] as IDBValidKey)
-      .filter((k) => k !== undefined);
-    await deleteKeys(db, 'syncQueue', stale);
-  }
+  for (const id of removed.appointments) await appointmentService.deleteAppointment(id);
+  for (const id of removed.cases) await caseService.deleteCase(id);
+  for (const id of removed.prescriptions) await prescriptionService.deletePrescription(id);
+  for (const id of removed.followups) await followUpService.deleteFollowUp(id);
+  for (const id of removed.billing) await billingService.deleteBilling(id);
+  for (const id of removed.inventory) await inventoryService.deleteInventoryItem(id);
+  for (const id of removed.patients) await patientService.deletePatient(id);
 
   return {
     patients: removed.patients.length,

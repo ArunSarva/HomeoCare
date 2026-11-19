@@ -36,7 +36,7 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.3"
   },
-  "description": "A comprehensive homeopathy clinic management web application for doctors managing small to medium clinics. Supports up to 10,000+ patients with offline-first architecture.",
+  "description": "Homeopathy clinic management with a Google Sheets cloud backend and Google Drive media storage.",
   "keywords": [],
   "author": "",
   "license": "ISC"

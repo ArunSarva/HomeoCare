@@ -1,146 +1,44 @@
 import { Billing } from '../../../types';
-import { getDB } from '../../../hooks/useIndexedDB';
+import {
+  createCloudRecord,
+  deleteCloudRecord,
+  getCloudRecord,
+  getCloudRecords,
+  nextCloudId,
+  updateCloudRecord,
+} from '../../../services/googleCloudStore';
 
 /**
  * Generate billing ID
  */
 export const generateBillingId = async (): Promise<string> => {
-  try {
-    const db = await getDB();
-    const tx = db.transaction('billing', 'readonly');
-    const store = tx.objectStore('billing');
-    const request = store.getAll();
-    
-    return new Promise<string>((resolve, reject) => {
-      request.onsuccess = () => {
-        const bills: Billing[] = request.result;
-        
-        // Get all bills sorted by ID to find the highest
-        const sortedBills = bills.sort((a, b) => {
-          const numA = parseInt(a.id.replace('BILL', ''), 10) || 0;
-          const numB = parseInt(b.id.replace('BILL', ''), 10) || 0;
-          return numB - numA;
-        });
-        
-        if (sortedBills.length > 0) {
-          const lastId = sortedBills[0].id;
-          const num = parseInt(lastId.replace('BILL', ''), 10) || 0;
-          resolve(`BILL${String(num + 1).padStart(6, '0')}`);
-        } else {
-          resolve('BILL000001');
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch (error) {
-    console.error('Error generating billing ID:', error);
-    return 'BILL000001';
-  }
+  return nextCloudId('billing', 'BILL');
 };
 
-/**
- * Billing service for CRUD operations with offline-first support
- */
+/** Billing service backed by Google Sheets. */
 export class BillingService {
-  private async getDB() {
-    return getDB();
-  }
-
   async getAllBillings(): Promise<Billing[]> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('billing', 'readonly');
-      const store = tx.objectStore('billing');
-      const request = store.getAll();
-      
-      const bills = await new Promise<Billing[]>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result as Billing[]);
-        request.onerror = () => reject(request.error);
-      });
-      
-      return bills;
-    } catch (error) {
-      console.error('Error getting billing records:', error);
-      return [];
-    }
+    return getCloudRecords<Billing>('billing');
   }
 
   async getBillingById(id: string): Promise<Billing | null> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('billing', 'readonly');
-      const store = tx.objectStore('billing');
-      const request = store.get(id);
-      
-      return new Promise<Billing | null>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () => reject(request.error);
-      });
-    } catch (error) {
-      console.error('Error getting billing record:', error);
-      return null;
-    }
+    return getCloudRecord<Billing>('billing', id);
   }
 
   async getBillingsByPatientId(patientId: string): Promise<Billing[]> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('billing', 'readonly');
-      const store = tx.objectStore('billing');
-      const request = store.getAll();
-      
-      const bills = await new Promise<Billing[]>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result as Billing[]);
-        request.onerror = () => reject(request.error);
-      });
-      
-      return bills.filter(bill => bill.patientId === patientId);
-    } catch (error) {
-      console.error('Error getting billings by patient ID:', error);
-      return [];
-    }
+    return (await this.getAllBillings()).filter((bill) => bill.patientId === patientId);
   }
 
   async createBilling(billingData: Omit<Billing, 'id' | 'createdAt' | 'updatedAt'>, customCreatedAt?: string): Promise<Billing> {
-    try {
-      const db = await this.getDB();
-      // Generate the ID first: awaiting it after opening the write
-      // transaction let IndexedDB auto-commit it, so store.put() threw.
-      const billingId = await generateBillingId();
-
-      const tx = db.transaction('billing', 'readwrite');
-      const store = tx.objectStore('billing');
-      
-      const billing: Billing = {
-        ...billingData,
-        id: billingId,
-        createdAt: customCreatedAt || new Date().toISOString(),
-        updatedAt: customCreatedAt || new Date().toISOString(),
-      };
-
-      store.put(billing);
-      
-      // Add to sync queue
-      await this.addToSyncQueue('billing', 'create', billing);
-
-      return billing;
-    } catch (error) {
-      console.error('Error creating billing record:', error);
-      throw error;
-    }
+    const billingId = await generateBillingId();
+    const now = customCreatedAt || new Date().toISOString();
+    const billing: Billing = { ...billingData, id: billingId, createdAt: now, updatedAt: now };
+    return createCloudRecord('billing', billing);
   }
 
   async updateBilling(id: string, billingData: Partial<Billing>): Promise<void> {
     try {
-      const db = await this.getDB();
-      const tx = db.transaction('billing', 'readwrite');
-      const store = tx.objectStore('billing');
-      
-      const existing = await new Promise<Billing | undefined>((resolve, reject) => {
-        const request = store.get(id);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
+      const existing = await this.getBillingById(id);
       
       if (!existing) {
         throw new Error('Billing record not found');
@@ -152,8 +50,7 @@ export class BillingService {
         updatedAt: new Date().toISOString(),
       };
 
-      store.put(updatedBilling);
-      await this.addToSyncQueue('billing', 'update', updatedBilling);
+      await updateCloudRecord<Billing>('billing', id, updatedBilling);
     } catch (error) {
       console.error('Error updating billing record:', error);
       throw error;
@@ -162,12 +59,7 @@ export class BillingService {
 
   async deleteBilling(id: string): Promise<void> {
     try {
-      const db = await this.getDB();
-      const tx = db.transaction('billing', 'readwrite');
-      const store = tx.objectStore('billing');
-      store.delete(id);
-      
-      await this.addToSyncQueue('billing', 'delete', { id });
+      await deleteCloudRecord('billing', id);
     } catch (error) {
       console.error('Error deleting billing record:', error);
       throw error;
@@ -210,7 +102,7 @@ export class BillingService {
       return filtered;
     } catch (error) {
       console.error('Error searching billing records:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -279,7 +171,7 @@ export class BillingService {
       return { daily, monthly, yearly };
     } catch (error) {
       console.error('Error getting revenue reports:', error);
-      return { daily: [], monthly: [], yearly: [] };
+      throw error;
     }
   }
 
@@ -328,14 +220,7 @@ export class BillingService {
       };
     } catch (error) {
       console.error('Error getting billing KPIs:', error);
-      return {
-        totalRevenue: 0,
-        pendingPayments: 0,
-        totalPatientsBilled: 0,
-        todayRevenue: 0,
-        thisMonthRevenue: 0,
-        thisYearRevenue: 0,
-      };
+      throw error;
     }
   }
 
@@ -383,27 +268,7 @@ export class BillingService {
       return csvContent;
     } catch (error) {
       console.error('Error exporting to CSV:', error);
-      return '';
-    }
-  }
-
-  private async addToSyncQueue(type: string, action: string, data: any): Promise<void> {
-    try {
-      const db = await getDB();
-      const tx = db.transaction('syncQueue', 'readwrite');
-      const store = tx.objectStore('syncQueue');
-      const id = crypto.randomUUID();
-      await store.put({
-        id,
-        type,
-        action,
-        data,
-        timestamp: Date.now(),
-        status: 'pending',
-        retryCount: 0,
-      });
-    } catch (error) {
-      console.error('Error adding to sync queue:', error);
+      throw error;
     }
   }
 }

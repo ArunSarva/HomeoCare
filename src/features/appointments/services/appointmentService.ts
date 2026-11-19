@@ -1,93 +1,36 @@
 import { Appointment } from '../../../types';
-import { getDB } from '../../../hooks/useIndexedDB';
+import {
+  createCloudRecord,
+  deleteCloudRecord,
+  getCloudRecord,
+  getCloudRecords,
+  nextCloudId,
+  updateCloudRecord,
+} from '../../../services/googleCloudStore';
 
 /**
  * Generate appointment ID
  */
 export const generateAppointmentId = async (): Promise<string> => {
-  try {
-    const db = await getDB();
-    const tx = db.transaction('appointments', 'readonly');
-    const store = tx.objectStore('appointments');
-    const request = store.getAll();
-    
-    return new Promise<string>((resolve, reject) => {
-      request.onsuccess = () => {
-        const appointments: Appointment[] = request.result;
-        
-        // Get all appointments sorted by ID to find the highest
-        const sortedAppointments = appointments.sort((a, b) => {
-          const numA = parseInt(a.id.replace('APT', ''), 10) || 0;
-          const numB = parseInt(b.id.replace('APT', ''), 10) || 0;
-          return numB - numA;
-        });
-        
-        if (sortedAppointments.length > 0) {
-          const lastId = sortedAppointments[0].id;
-          const num = parseInt(lastId.replace('APT', ''), 10) || 0;
-          resolve(`APT${String(num + 1).padStart(6, '0')}`);
-        } else {
-          resolve('APT000001');
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch (error) {
-    console.error('Error generating appointment ID:', error);
-    return 'APT000001';
-  }
+  return nextCloudId('appointments', 'APT');
 };
 
 /**
- * Appointment service for CRUD operations with offline-first support
+ * Appointment service backed by Google Sheets.
  */
 export class AppointmentService {
-  private async getDB() {
-    return getDB();
-  }
-
   async getAllAppointments(): Promise<Appointment[]> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('appointments', 'readonly');
-      const store = tx.objectStore('appointments');
-      const request = store.getAll();
-      
-      const appointments = await new Promise<Appointment[]>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result as Appointment[]);
-        request.onerror = () => reject(request.error);
-      });
-      
-      return appointments;
-    } catch (error) {
-      console.error('Error getting appointments:', error);
-      return [];
-    }
+    return getCloudRecords<Appointment>('appointments');
   }
 
   async getAppointmentsByDateRange(startDate: string, endDate: string): Promise<Appointment[]> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('appointments', 'readonly');
-      const store = tx.objectStore('appointments');
-      const request = store.getAll();
-      
-      const appointments = await new Promise<Appointment[]>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result as Appointment[]);
-        request.onerror = () => reject(request.error);
-      });
-      
-      const start = new Date(startDate).setHours(0, 0, 0, 0);
-      const end = new Date(endDate).setHours(23, 59, 59, 999);
-      
-      return appointments.filter(apt => {
-        const aptDate = new Date(apt.appointmentDate).getTime();
-        return aptDate >= start && aptDate <= end;
-      });
-    } catch (error) {
-      console.error('Error getting appointments by date range:', error);
-      return [];
-    }
+    const appointments = await this.getAllAppointments();
+    const start = new Date(startDate).setHours(0, 0, 0, 0);
+    const end = new Date(endDate).setHours(23, 59, 59, 999);
+    return appointments.filter((appointment) => {
+      const appointmentDate = new Date(appointment.appointmentDate).getTime();
+      return appointmentDate >= start && appointmentDate <= end;
+    });
   }
 
   async getTodayAppointments(): Promise<Appointment[]> {
@@ -106,150 +49,51 @@ export class AppointmentService {
   }
 
   async getAppointmentsByPatientId(patientId: string): Promise<Appointment[]> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('appointments', 'readonly');
-      const store = tx.objectStore('appointments');
-      const request = store.getAll();
-      
-      const appointments = await new Promise<Appointment[]>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result as Appointment[]);
-        request.onerror = () => reject(request.error);
-      });
-      
-      return appointments.filter(apt => apt.patientId === patientId);
-    } catch (error) {
-      console.error('Error getting appointments by patient ID:', error);
-      return [];
-    }
+    return (await this.getAllAppointments()).filter((appointment) => appointment.patientId === patientId);
   }
 
   async getAppointmentById(id: string): Promise<Appointment | null> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('appointments', 'readonly');
-      const store = tx.objectStore('appointments');
-      const request = store.get(id);
-      
-      return new Promise<Appointment | null>((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () => reject(request.error);
-      });
-    } catch (error) {
-      console.error('Error getting appointment:', error);
-      return null;
-    }
+    return getCloudRecord<Appointment>('appointments', id);
   }
 
   async createAppointment(appointmentData: Omit<Appointment, 'id' | 'createdAt' | 'updatedAt'>): Promise<Appointment> {
-    try {
-      const db = await this.getDB();
-      // Generate the ID first: awaiting it after opening the write
-      // transaction let IndexedDB auto-commit it, so store.put() threw.
-      const appointmentId = await generateAppointmentId();
-
-      // Check for conflicts (also before the write transaction opens)
-      const conflicts = await this.checkAppointmentConflict(
-        appointmentData.appointmentDate,
-        appointmentData.startTime,
-        appointmentData.endTime,
-        appointmentData.doctorId,
-        appointmentData.patientId
-      );
-      
-      if (conflicts.length > 0) {
-        throw new Error('Appointment conflicts with existing appointment(s)');
-      }
-
-      const tx = db.transaction('appointments', 'readwrite');
-      const store = tx.objectStore('appointments');
-      
-      const appointment: Appointment = {
-        ...appointmentData,
-        id: appointmentId,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      store.put(appointment);
-      
-      // Add to sync queue
-      await this.addToSyncQueue('appointment', 'create', appointment);
-
-      return appointment;
-    } catch (error) {
-      console.error('Error creating appointment:', error);
-      throw error;
-    }
+    const appointmentId = await generateAppointmentId();
+    const conflicts = await this.checkAppointmentConflict(
+      appointmentData.appointmentDate,
+      appointmentData.startTime,
+      appointmentData.endTime,
+      appointmentData.doctorId,
+      appointmentData.patientId,
+    );
+    if (conflicts.length > 0) throw new Error('Appointment conflicts with existing appointment(s)');
+    const now = new Date().toISOString();
+    const appointment: Appointment = { ...appointmentData, id: appointmentId, createdAt: now, updatedAt: now };
+    return createCloudRecord('appointments', appointment);
   }
 
   async updateAppointment(id: string, appointmentData: Partial<Appointment>): Promise<void> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('appointments', 'readonly');
-      const store = tx.objectStore('appointments');
-      
-      const existing = await new Promise<Appointment | undefined>((resolve, reject) => {
-        const request = store.get(id);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      
-      if (!existing) {
-        throw new Error('Appointment not found');
+    const existing = await this.getAppointmentById(id);
+    if (!existing) throw new Error('Appointment not found');
+    if (appointmentData.appointmentDate || appointmentData.startTime || appointmentData.endTime) {
+      const conflicts = await this.checkAppointmentConflict(
+        appointmentData.appointmentDate || existing.appointmentDate,
+        appointmentData.startTime || existing.startTime,
+        appointmentData.endTime || existing.endTime,
+        appointmentData.doctorId || existing.doctorId,
+        appointmentData.patientId || existing.patientId,
+      );
+      if (conflicts.some((conflict) => conflict.id !== id)) {
+        throw new Error('Appointment conflicts with existing appointment(s)');
       }
-
-      // If date or time changed, check for conflicts
-      if (appointmentData.appointmentDate || appointmentData.startTime || appointmentData.endTime) {
-        const conflicts = await this.checkAppointmentConflict(
-          appointmentData.appointmentDate || existing.appointmentDate,
-          appointmentData.startTime || existing.startTime,
-          appointmentData.endTime || existing.endTime,
-          appointmentData.doctorId || existing.doctorId,
-          appointmentData.patientId || existing.patientId
-        );
-        
-        const conflicting = conflicts.filter(c => c.id !== id);
-        if (conflicting.length > 0) {
-          throw new Error('Appointment conflicts with existing appointment(s)');
-        }
-      }
-
-      const updatedAppointment: Appointment = {
-        ...existing,
-        ...appointmentData,
-        updatedAt: new Date().toISOString(),
-      };
-
-      // Write in a fresh transaction: the one used to read `existing` has
-      // auto-committed by now (the conflict check above awaits other reads),
-      // so putting into it threw TransactionInactiveError and edits were lost.
-      await new Promise<void>((resolve, reject) => {
-        const writeTx = db.transaction('appointments', 'readwrite');
-        writeTx.objectStore('appointments').put(updatedAppointment);
-        writeTx.oncomplete = () => resolve();
-        writeTx.onerror = () => reject(writeTx.error);
-        writeTx.onabort = () => reject(writeTx.error);
-      });
-      await this.addToSyncQueue('appointment', 'update', updatedAppointment);
-    } catch (error) {
-      console.error('Error updating appointment:', error);
-      throw error;
     }
+    await updateCloudRecord<Appointment>('appointments', id, {
+      ...appointmentData,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   async deleteAppointment(id: string): Promise<void> {
-    try {
-      const db = await this.getDB();
-      const tx = db.transaction('appointments', 'readwrite');
-      const store = tx.objectStore('appointments');
-      store.delete(id);
-      
-      await this.addToSyncQueue('appointment', 'delete', { id });
-    } catch (error) {
-      console.error('Error deleting appointment:', error);
-      throw error;
-    }
+    await deleteCloudRecord('appointments', id);
   }
 
   async searchAppointments(
@@ -294,7 +138,7 @@ export class AppointmentService {
       return filtered;
     } catch (error) {
       console.error('Error searching appointments:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -342,7 +186,7 @@ export class AppointmentService {
       });
     } catch (error) {
       console.error('Error checking appointment conflicts:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -351,25 +195,6 @@ export class AppointmentService {
     return hours * 60 + minutes;
   }
 
-  private async addToSyncQueue(type: string, action: string, data: any): Promise<void> {
-    try {
-      const db = await getDB();
-      const tx = db.transaction('syncQueue', 'readwrite');
-      const store = tx.objectStore('syncQueue');
-      const id = crypto.randomUUID();
-      await store.put({
-        id,
-        type,
-        action,
-        data,
-        timestamp: Date.now(),
-        status: 'pending',
-        retryCount: 0,
-      });
-    } catch (error) {
-      console.error('Error adding to sync queue:', error);
-    }
-  }
 }
 
 export const appointmentService = new AppointmentService();

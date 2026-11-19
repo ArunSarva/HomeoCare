@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Avatar, Badge, Button, Card, Skeleton } from 'react-typescript-ui';
@@ -7,6 +7,7 @@ import { patientService } from '../services/patientService';
 import { EmptyState } from '../../../components/ui/EmptyState';
 import { formatDate, whatsappLink } from '../../dashboard/components/format';
 import { ageFromDob } from '../utils/age';
+import { getDriveImageObjectUrl } from '../../../services/googleCloudStore';
 
 function InfoCard({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -33,6 +34,8 @@ const actionLinkClass =
 export function PatientDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   const { data: patient, isLoading, error } = useQuery({
     queryKey: ['patient', id],
@@ -44,6 +47,33 @@ export function PatientDetail() {
       return null;
     },
   });
+
+  useEffect(() => {
+    if (!patient?.photo?.startsWith('drive:')) {
+      setPhotoUrl(null);
+      setPhotoError(null);
+      return;
+    }
+
+    let active = true;
+    let objectUrl: string | null = null;
+    setPhotoUrl(null);
+    setPhotoError(null);
+    getDriveImageObjectUrl(patient.photo)
+      .then((url) => {
+        objectUrl = url;
+        if (active) setPhotoUrl(url);
+        else if (url) URL.revokeObjectURL(url);
+      })
+      .catch((err: unknown) => {
+        if (active) setPhotoError(err instanceof Error ? err.message : 'Could not load the patient photo from Google Drive.');
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [patient?.photo]);
 
   const handleEdit = () => {
     navigate(`/patients/${id}/edit`);
@@ -87,7 +117,7 @@ export function PatientDetail() {
       <Card padding="md" className="shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center gap-4">
           <div className="flex items-center gap-4 min-w-0 flex-1">
-            <Avatar name={patient.fullName} src={patient.photo} size="lg" />
+            <Avatar name={patient.fullName} src={patient.photo?.startsWith('drive:') ? photoUrl ?? undefined : patient.photo} size="lg" />
             <div className="min-w-0">
               <h1 className="text-2xl font-semibold leading-8 text-text truncate">{patient.fullName}</h1>
               <p className="mt-0.5 text-sm text-muted tabular-nums">
@@ -103,6 +133,7 @@ export function PatientDetail() {
                   <Badge color="primary" variant="soft" size="sm">Registered {formatDate(patient.registrationDate)}</Badge>
                 )}
               </div>
+              {photoError && <p role="alert" className="mt-2 text-sm text-danger">{photoError}</p>}
             </div>
           </div>
 

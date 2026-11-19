@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import { searchService } from '../services/SearchService';
 import { SearchResult, SearchOptions, SearchHistoryEntry } from '../types/Search';
-import { getDB } from '../../../hooks/useIndexedDB';
+import { deleteCloudRecord, getCloudRecords, upsertCloudRecord } from '../../../services/googleCloudStore';
+
+type StoredSearchHistory = SearchHistoryEntry & { id: string };
 
 interface UseSearchReturn {
   search: (query: string, options?: SearchOptions) => Promise<SearchResult[]>;
@@ -17,32 +19,14 @@ export const useSearch = (): UseSearchReturn => {
   const [isLoading, setIsLoading] = useState(false);
   const [searchHistory, setSearchHistory] = useState<SearchHistoryEntry[]>([]);
 
-  // Load search history on mount
   useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const db = await getDB();
-        const tx = db.transaction('localCache', 'readonly');
-        const store = tx.objectStore('localCache');
-        const request = store.getAll();
-        
-        const entries = await new Promise<any[]>((resolve, reject) => {
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        });
-        
-        const history = entries
-          .filter(e => e.key?.startsWith('search-history:'))
-          .map(e => e.value)
-          .sort((a, b) => b.timestamp - a.timestamp);
-        
-        setSearchHistory(history);
-      } catch (error) {
-        console.error('Error loading search history:', error);
-      }
-    };
-
-    loadHistory();
+    let active = true;
+    getCloudRecords<StoredSearchHistory>('searchHistory')
+      .then((entries) => {
+        if (active) setSearchHistory(entries.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10));
+      })
+      .catch((error: unknown) => console.error('Error loading search history from Google Sheets:', error));
+    return () => { active = false; };
   }, []);
 
   const search = useCallback(async (query: string, options?: SearchOptions): Promise<SearchResult[]> => {
@@ -52,92 +36,35 @@ export const useSearch = (): UseSearchReturn => {
     }
 
     setIsLoading(true);
-
     try {
       const results = await searchService.search(query, options);
       setSearchResults(results);
       return results;
     } catch (error) {
-      console.error('Error searching:', error);
       setSearchResults([]);
-      return [];
+      throw error;
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   const addSearchToHistory = useCallback(async (query: string) => {
-    try {
-      const db = await getDB();
-      const tx = db.transaction('localCache', 'readwrite');
-      const store = tx.objectStore('localCache');
-      
-      const key = `search-history:${query.toLowerCase()}`;
-      
-      // Get existing entry
-      const getRequest = store.get(key);
-      const entry = await new Promise<SearchHistoryEntry | null>((resolve, reject) => {
-        getRequest.onsuccess = () => resolve(getRequest.result?.value || null);
-        getRequest.onerror = () => reject(getRequest.error);
-      });
-
-      let newEntry: SearchHistoryEntry;
-
-      if (entry) {
-        // Update existing entry
-        newEntry = {
-          ...entry,
-          timestamp: Date.now(),
-          resultCount: searchResults.length
-        };
-      } else {
-        // Create new entry
-        newEntry = {
-          query,
-          timestamp: Date.now(),
-          resultCount: searchResults.length
-        };
-      }
-
-      await store.put({
-        key,
-        value: newEntry,
-        timestamp: Date.now()
-      });
-
-      // Update local state
-      setSearchHistory(prev => {
-        const filtered = prev.filter(h => h.query !== query);
-        return [newEntry, ...filtered].slice(0, 10);
-      });
-    } catch (error) {
-      console.error('Error adding to search history:', error);
-    }
+    const id = `search-history:${query.toLowerCase()}`;
+    const entry: StoredSearchHistory = {
+      id,
+      query,
+      timestamp: Date.now(),
+      resultCount: searchResults.length,
+    };
+    await upsertCloudRecord('searchHistory', entry);
+    const all = await getCloudRecords<StoredSearchHistory>('searchHistory');
+    setSearchHistory(all.sort((a, b) => b.timestamp - a.timestamp).slice(0, 10));
   }, [searchResults]);
 
   const clearHistory = useCallback(async () => {
-    try {
-      const db = await getDB();
-      const tx = db.transaction('localCache', 'readwrite');
-      const store = tx.objectStore('localCache');
-      
-      // Get all keys starting with 'search-history:'
-      const getAllRequest = store.getAll();
-      const entries = await new Promise<any[]>((resolve, reject) => {
-        getAllRequest.onsuccess = () => resolve(getAllRequest.result);
-        getAllRequest.onerror = () => reject(getAllRequest.error);
-      });
-
-      for (const entry of entries) {
-        if (entry.key?.startsWith('search-history:')) {
-          store.delete(entry.key);
-        }
-      }
-
-      setSearchHistory([]);
-    } catch (error) {
-      console.error('Error clearing search history:', error);
-    }
+    const entries = await getCloudRecords<StoredSearchHistory>('searchHistory');
+    await Promise.all(entries.map((entry) => deleteCloudRecord('searchHistory', entry.id)));
+    setSearchHistory([]);
   }, []);
 
   return {
@@ -146,7 +73,7 @@ export const useSearch = (): UseSearchReturn => {
     isLoading,
     searchHistory,
     addSearchToHistory,
-    clearHistory
+    clearHistory,
   };
 };
 

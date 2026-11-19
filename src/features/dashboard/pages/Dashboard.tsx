@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, IconButton } from 'react-typescript-ui';
+import { Alert, Button, IconButton } from 'react-typescript-ui';
 import { BellRing, CalendarCheck, CalendarPlus, ClipboardList, IndianRupee, PackageX, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
 import { dashboardService } from '../services/dashboardService';
@@ -46,6 +46,7 @@ export function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [kpi, setKpi] = useState<KPISummary>(EMPTY_KPI);
   const [schedule, setSchedule] = useState<Appointment[]>([]);
   const [followUpsDue, setFollowUpsDue] = useState<FollowUp[]>([]);
@@ -59,6 +60,7 @@ export function Dashboard() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [kpiData, growth, visits, revenue, outcomes, todays, due, contactMap] = await Promise.all([
         dashboardService.fetchKPIs(),
@@ -82,6 +84,7 @@ export function Dashboard() {
       setRevenueLastMonth(revenue.find(r => r.month === monthKey(-1))?.revenue ?? 0);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
+      setLoadError(error instanceof Error ? error.message : 'Could not load clinic data from Google Sheets.');
     } finally {
       setLoading(false);
     }
@@ -99,6 +102,11 @@ export function Dashboard() {
 
   return (
     <div className="space-y-4 xl:space-y-5">
+      {loadError && (
+        <Alert color="danger" title="Couldn't load dashboard data">
+          {loadError}
+        </Alert>
+      )}
       {/* 1. Greeting row */}
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 pb-2">
         <div>

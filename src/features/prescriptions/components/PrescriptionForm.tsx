@@ -46,7 +46,13 @@ const PrescriptionForm: React.FC<PrescriptionFormProps> = ({ patientId, patientN
   const [templates, setTemplates] = useState<any[]>([]);
 
   useEffect(() => {
-    setTemplates(prescriptionService.getTemplates());
+    let active = true;
+    prescriptionService.getTemplates()
+      .then((savedTemplates) => { if (active) setTemplates(savedTemplates); })
+      .catch((loadError: unknown) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : 'Could not load prescription templates.');
+      });
+    return () => { active = false; };
   }, []);
 
   const handleMedicineChange = (index: number, field: keyof MedicineForm, value: string) => {
@@ -74,15 +80,15 @@ const PrescriptionForm: React.FC<PrescriptionFormProps> = ({ patientId, patientN
     }
   };
 
-  const loadTemplate = (templateId: string) => {
-    const templateMedicines = prescriptionService.loadTemplate(templateId);
+  const loadTemplate = async (templateId: string) => {
+    const templateMedicines = await prescriptionService.loadTemplate(templateId);
     if (templateMedicines) {
       setMedicines(templateMedicines as MedicineForm[]);
     }
     setShowTemplateModal(false);
   };
 
-  const handleSaveTemplate = () => {
+  const handleSaveTemplate = async () => {
     if (!templateName.trim()) {
       setError('Template name is required');
       return;
@@ -107,16 +113,24 @@ const PrescriptionForm: React.FC<PrescriptionFormProps> = ({ patientId, patientN
       updatedAt: new Date().toISOString(),
     };
 
-    prescriptionService.saveAsTemplate(prescriptionData, templateName);
-    setTemplates(prescriptionService.getTemplates());
-    setTemplateName('');
-    setShowSaveTemplateModal(false);
-    setError(null);
+    try {
+      await prescriptionService.saveAsTemplate(prescriptionData, templateName);
+      setTemplates(await prescriptionService.getTemplates());
+      setTemplateName('');
+      setShowSaveTemplateModal(false);
+      setError(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Could not save prescription template.');
+    }
   };
 
-  const handleDeleteTemplate = (templateId: string) => {
-    prescriptionService.deleteTemplate(templateId);
-    setTemplates(prescriptionService.getTemplates());
+  const handleDeleteTemplate = async (templateId: string) => {
+    try {
+      await prescriptionService.deleteTemplate(templateId);
+      setTemplates(await prescriptionService.getTemplates());
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Could not delete prescription template.');
+    }
   };
 
   const validateForm = (): boolean => {

@@ -6,6 +6,7 @@ import { formatDate } from 'date-fns';
 import { Patient, EmergencyContact } from '../../../types';
 import { generatePatientId, patientService } from '../services/patientService';
 import { ageFromDob, todayIso } from '../utils/age';
+import { getDriveImageObjectUrl } from '../../../services/googleCloudStore';
 
 interface PatientFormProps {
   patient?: Patient;
@@ -35,6 +36,7 @@ const PatientForm: React.FC<PatientFormProps> = ({ patient, onSubmit }) => {
   });
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [drivePhotoUrl, setDrivePhotoUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (patient) {
@@ -49,6 +51,58 @@ const PatientForm: React.FC<PatientFormProps> = ({ patient, onSubmit }) => {
       }));
     }
   }, [patient]);
+
+  useEffect(() => {
+    if (!formData.photo?.startsWith('drive:')) {
+      setDrivePhotoUrl(null);
+      return;
+    }
+
+    let active = true;
+    let objectUrl: string | null = null;
+    setDrivePhotoUrl(null);
+    getDriveImageObjectUrl(formData.photo)
+      .then((url) => {
+        objectUrl = url;
+        if (active) setDrivePhotoUrl(url);
+        else if (url) URL.revokeObjectURL(url);
+      })
+      .catch((err: unknown) => {
+        if (active) setError(err instanceof Error ? err.message : 'Could not load the patient photo from Google Drive.');
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [formData.photo]);
+
+  const handlePhotoChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Choose an image file for the patient photo.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError('Patient photos must be 5 MB or smaller.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const photoData = reader.result;
+      if (typeof photoData !== 'string') {
+        setError('Could not read the selected patient photo.');
+        return;
+      }
+      setFormData((current) => ({ ...current, photo: photoData }));
+      setError(null);
+    };
+    reader.onerror = () => setError('Could not read the selected patient photo.');
+    reader.readAsDataURL(file);
+  };
 
   const handleChange = (field: keyof Patient, value: string | number) => {
     setFormData(prev => ({
@@ -157,6 +211,29 @@ const PatientForm: React.FC<PatientFormProps> = ({ patient, onSubmit }) => {
         <h2 className={sectionTitle}>Personal details</h2>
         <p className="text-[13px] text-muted mb-4">Basic identity details for the patient record.</p>
         <div className={grid2}>
+          <div className="md:col-span-2">
+            <Field label="Patient photo" helperText="The photo uploads to Google Drive when you save. Maximum size: 5 MB.">
+              <div className="flex flex-wrap items-center gap-4">
+                {(formData.photo?.startsWith('drive:') ? drivePhotoUrl : formData.photo) && (
+                  <img
+                    src={formData.photo?.startsWith('drive:') ? drivePhotoUrl ?? undefined : formData.photo}
+                    alt="Patient"
+                    className="h-16 w-16 rounded-full object-cover"
+                  />
+                )}
+                <input type="file" accept="image/*" onChange={handlePhotoChange} aria-label="Choose patient photo" />
+                {formData.photo && (
+                  <button
+                    type="button"
+                    onClick={() => setFormData((current) => ({ ...current, photo: undefined }))}
+                    className="text-sm text-danger hover:underline"
+                  >
+                    Remove photo
+                  </button>
+                )}
+              </div>
+            </Field>
+          </div>
           <Field label="Full name" required>
             <Input
               type="text"
