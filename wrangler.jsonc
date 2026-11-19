@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "homeocare-pro",
+  "compatibility_date": "2025-11-01",
+  "assets": {
+    "directory": "./dist",
+    // The app uses BrowserRouter (/patients, /cases/123 ...). Without this,
+    // refreshing or opening a deep link would return 404 instead of the app.
+    "not_found_handling": "single-page-application"
+  }
+}
